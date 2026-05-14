@@ -1,220 +1,237 @@
-import streamlit as st
 import math
 
-st.set_page_config(layout="wide")
-st.title("🚄✈️ 空铁市场分担率计算系统")
+import streamlit as st
 
 
-# =====================================
-# 核心计算逻辑封装函数
-# =====================================
-def render_calculator(default_city1, default_city2, uid):
-    """
-    渲染完整的计算器模块
-    :param default_city1: 默认出发城市
-    :param default_city2: 默认到达城市
-    :param uid: 唯一标识符（用于区分不同页面的组件ID）
-    """
+WORK_HOURS = 1984
 
-    # 1️⃣ 出行时间成本计算
-    st.header("1️⃣ 出行时间成本计算")
+OD_DATA = {
+    "cs_sh": {
+        "city1": "长沙",
+        "city2": "上海",
+        "income1": 66396,
+        "income2": 91987,
+        "air_price": 796.0,
+        "rail_price": 527.5,
+        "air_time": 5.0,
+        "rail_time": 7.0,
+        "real_p_air": 0.37,
+        "models": {
+            "总体模型（不剔除）": {
+                "const": -0.395276,
+                "beta_p": -0.627032,
+                "beta_t": -0.511145,
+                "vot": 81.518143,
+            },
+            "总体模型（剔除）": {
+                "const": 0.224989,
+                "beta_p": -1.082697,
+                "beta_t": -0.839184,
+                "vot": 77.508688,
+            },
+            "分 OD 模型（不剔除）": {
+                "const": -0.960954,
+                "beta_p": -0.675632,
+                "beta_t": -0.759842,
+                "vot": 112.463811,
+            },
+            "分 OD 模型（剔除）": {
+                "const": -0.386790,
+                "beta_p": -1.059731,
+                "beta_t": -1.095673,
+                "vot": 103.391569,
+            },
+        },
+    },
+    "sh_gy": {
+        "city1": "上海",
+        "city2": "贵阳",
+        "income1": 91987,
+        "income2": 47690,
+        "air_price": 946.0,
+        "rail_price": 803.0,
+        "air_time": 6.0,
+        "rail_time": 10.0,
+        "real_p_air": 0.93,
+        "models": {
+            "总体模型（不剔除）": {
+                "const": -0.395276,
+                "beta_p": -0.627032,
+                "beta_t": -0.511145,
+                "vot": 81.518143,
+            },
+            "总体模型（剔除）": {
+                "const": 0.224989,
+                "beta_p": -1.082697,
+                "beta_t": -0.839184,
+                "vot": 77.508688,
+            },
+            "分 OD 模型（不剔除）": {
+                "const": 0.750170,
+                "beta_p": -0.515936,
+                "beta_t": -0.221169,
+                "vot": 42.867579,
+            },
+            "分 OD 模型（剔除）": {
+                "const": 1.631045,
+                "beta_p": -1.156767,
+                "beta_t": -0.472329,
+                "vot": 40.831793,
+            },
+        },
+    },
+}
 
-    st.markdown("### 单位时间价值计算公式：")
-    st.latex(r"""
-    VOT = \frac{W}{H}
-    """)
 
-    st.markdown("""
-    其中：
-    - \(W\)：平均人均可支配收入  
-    - \(H\)：年工作时间  
-    """)
+st.set_page_config(layout="wide", page_title="空铁市场分担率计算系统")
+st.title("空铁市场分担率计算系统")
+st.markdown("---")
 
-    col_city1, col_city2, col_work = st.columns(3)
-    with col_city1:
-        city1 = st.text_input("城市1名称", default_city1, key=f"city1_{uid}")
-        income1 = float(st.text_input(f"{city1} 人均可支配收入", "0", key=f"inc1_{uid}"))
-    with col_city2:
-        city2 = st.text_input("城市2名称", default_city2, key=f"city2_{uid}")
-        income2 = float(st.text_input(f"{city2} 人均可支配收入", "0", key=f"inc2_{uid}"))
+
+def input_with_reset(label, default_value, key, step=None, fmt=None):
+    """带独立重置按钮的数字输入框"""
+    c1, c2 = st.columns([10, 1])
+    with c1:
+        kwargs = {"key": key}
+        if step is not None:
+            kwargs["step"] = step
+        if fmt is not None:
+            kwargs["format"] = fmt
+        if key not in st.session_state:
+            kwargs["value"] = default_value
+        value = st.number_input(label, **kwargs)
+    with c2:
+        st.write("")
+        if st.button("↺", key=f"rst_{key}", help=f"恢复默认值: {default_value}"):
+            st.session_state.pop(key, None)
+            st.rerun()
+    return value
+
+
+def logit_share(u_air, u_train=0.0):
+    if u_air == 0 and u_train == 0:
+        return 0.5, 0.5
+
+    try:
+        exp_air = math.exp(u_air)
+        exp_train = math.exp(u_train)
+        p_air = exp_air / (exp_air + exp_train)
+    except OverflowError:
+        p_air = 1.0 if u_air > u_train else 0.0
+
+    return p_air, 1.0 - p_air
+
+
+def sync_model_defaults(uid, model_name, model):
+    """模型切换时，把参数输入框同步到新模型默认值。"""
+    active_key = f"active_model_{uid}"
+    if st.session_state.get(active_key) == model_name:
+        return
+
+    for param in ("const", "beta_p", "beta_t"):
+        st.session_state[f"{param}_{uid}"] = model[param]
+    st.session_state[active_key] = model_name
+
+
+def render_calculator(uid):
+    data = OD_DATA[uid]
+    city1 = data["city1"]
+    city2 = data["city2"]
+
+    st.header(f"1. 模型参数与 VOT - {city1} 到 {city2}")
+
+    model_name = st.selectbox(
+        "选择回归参数版本",
+        list(data["models"].keys()),
+        index=1,
+        key=f"model_{uid}",
+    )
+    model = data["models"][model_name]
+    sync_model_defaults(uid, model_name, model)
+
+    rp_enabled = st.checkbox("RP修正", value=True, key=f"rp_{uid}",
+                             help="启用后 ASC 由现实市占率校准；关闭后直接使用回归常数项")
+
+    col_coef1, col_coef2, col_coef3, col_coef4 = st.columns(4)
+    with col_coef1:
+        const_input = input_with_reset("常数项 ASC", model["const"], key=f"const_{uid}", fmt="%.6f")
+    with col_coef2:
+        beta_p = input_with_reset("票价系数 beta_p", model["beta_p"], key=f"beta_p_{uid}", fmt="%.6f")
+    with col_coef3:
+        beta_t = input_with_reset("时间系数 beta_t", model["beta_t"], key=f"beta_t_{uid}", fmt="%.6f")
+    col_coef4.metric("回归 VOT", f"{model['vot']:.2f} 元/小时")
+
+    col_income1, col_income2, col_work, col_vot = st.columns(4)
+    with col_income1:
+        income1 = input_with_reset(f"{city1}人均可支配收入 (元/年)", data["income1"], key=f"income1_{uid}", step=100)
+    with col_income2:
+        income2 = input_with_reset(f"{city2}人均可支配收入 (元/年)", data["income2"], key=f"income2_{uid}", step=100)
     with col_work:
-        work_hours = float(st.text_input("年工作小时数", "1984", key=f"work_{uid}"))
-
+        work_hours = input_with_reset("年工作小时数", WORK_HOURS, key=f"work_{uid}", step=1)
     avg_income = (income1 + income2) / 2
-    # 防止除以0报错
-    unit_time_cost = avg_income / work_hours if work_hours > 0 else 0
+    income_vot = avg_income / work_hours if work_hours > 0 else 0
+    col_vot.metric("收入法 VOT", f"{income_vot:.2f} 元/小时")
 
-    st.success(f"平均收入 W = {avg_income:.2f}")
-    st.success(f"单位时间价值 VOT = {unit_time_cost:.2f} 元/小时")
+    st.markdown("---")
+    st.header("2. 出行属性默认值")
 
-    # 2️⃣ 指标计算
-    st.header("2️⃣ 指标计算（民航 vs 高铁）")
+    col_air, col_train = st.columns(2)
+    with col_air:
+        st.subheader("民航 Air")
+        with st.container(border=True):
+            air_price = input_with_reset("全程票价 (元)", data["air_price"], key=f"air_price_{uid}", step=1.0)
+            air_time = input_with_reset("门到门全程时间 (小时)", data["air_time"], key=f"air_time_{uid}", step=0.1)
 
-    col1, col2 = st.columns(2)
+    with col_train:
+        st.subheader("高铁 Rail")
+        with st.container(border=True):
+            rail_price = input_with_reset("全程票价 (元)", data["rail_price"], key=f"rail_price_{uid}", step=1.0)
+            rail_time = input_with_reset("门到门全程时间 (小时)", data["rail_time"], key=f"rail_time_{uid}", step=0.1)
 
-    # ================= 民航 =================
-    with col1:
-        st.subheader("✈️ 民航")
-
-        # -------- 经济性 --------
-        st.markdown("### 经济性")
-        st.latex(r"C_{air}=P_{air}")
-        price_air = float(st.text_input("票价", "0", key=f"price_air_{uid}"))
-        st.info(f"经济性成本 = {price_air:.2f}")
-
-        # -------- 快速性 --------
-        st.markdown("### 快速性")
-        st.latex(r"T_{air} = (t_1 + t_2 + t_3) \times VOT")
-
-        t1_air = float(st.text_input("安检值机时间", "1", key=f"t1_air_{uid}"))
-        t2_air = float(st.text_input("飞行时间", "0", key=f"t2_air_{uid}"))
-        t3_air = float(st.text_input("离开机场时间", "0.5", key=f"t3_air_{uid}"))
-
-        time_air = (t1_air + t2_air + t3_air) * unit_time_cost
-        st.info(f"时间成本 = {time_air:.2f}")
-
-        # -------- 便捷性 --------
-        st.markdown("### 便捷性")
-        st.latex(r"A_{air} = (a_1 + a_2) \times VOT")
-
-        access_air_1 = float(st.text_input("前往机场时间", "0", key=f"acc1_air_{uid}"))
-        access_air_2 = float(st.text_input("机场到目的地时间", "0", key=f"acc2_air_{uid}"))
-
-        access_air = (access_air_1 + access_air_2) * unit_time_cost
-        st.info(f"接驳成本 = {access_air:.2f}")
-
-        # -------- 舒适性 --------
-        st.markdown("### 舒适性")
-        st.latex(r"F_{air} = \frac{L}{1 + \alpha e^{-\beta t}} \times VOT")
-
-        L_air = float(st.text_input("极限恢复时间 L", "16", key=f"L_air_{uid}"))
-        alpha_air = float(st.text_input("α", "79", key=f"alpha_air_{uid}"))
-        beta_air = float(st.text_input("β", "0.25", key=f"beta_air_{uid}"))
-
-        def fatigue(t, alpha, beta, L):
-            return L / (1 + alpha * math.exp(-beta * t))
-
-        fatigue_air_val = fatigue(t2_air, alpha_air, beta_air, L_air)
-        comfort_air = fatigue_air_val * unit_time_cost
-        st.info(f"疲劳成本 = {comfort_air:.2f}")
-
-    # ================= 高铁 =================
-    with col2:
-        st.subheader("🚄 高铁")
-
-        # -------- 经济性 --------
-        st.markdown("### 经济性")
-        st.latex(r"C_{train} = P_{train}")
-        price_train = float(st.text_input("票价", "0", key=f"price_train_{uid}"))
-        st.info(f"经济性成本 = {price_train:.2f}")
-
-        # -------- 快速性 --------
-        st.markdown("### 快速性")
-        st.latex(r"T_{train} = (t_1 + t_2 + t_3) \times VOT")
-
-        t1_train = float(st.text_input("进站时间", "0.5", key=f"t1_train_{uid}"))
-        t2_train = float(st.text_input("运行时间", "0", key=f"t2_train_{uid}"))
-        t3_train = float(st.text_input("出站时间", "0.25", key=f"t3_train_{uid}"))
-
-        time_train = (t1_train + t2_train + t3_train) * unit_time_cost
-        st.info(f"时间成本 = {time_train:.2f}")
-
-        # -------- 便捷性 --------
-        st.markdown("### 便捷性")
-        st.latex(r"A_{train} = (a_1 + a_2) \times VOT")
-
-        access_train_1 = float(st.text_input("前往车站时间", "0", key=f"acc1_train_{uid}"))
-        access_train_2 = float(st.text_input("车站到目的地时间", "0", key=f"acc2_train_{uid}"))
-
-        access_train = (access_train_1 + access_train_2) * unit_time_cost
-        st.info(f"接驳成本 = {access_train:.2f}")
-
-        # -------- 舒适性 --------
-        st.markdown("### 舒适性")
-        st.latex(r"F_{train} = \frac{L}{1 + \alpha e^{-\beta t}} \times VOT")
-
-        L_train = float(st.text_input("极限恢复时间 L", "16", key=f"L_train_{uid}"))
-        alpha_train = float(st.text_input("α", "59", key=f"alpha_train_{uid}"))
-        beta_train = float(st.text_input("β", "0.29", key=f"beta_train_{uid}"))
-
-        fatigue_train_val = fatigue(t2_train, alpha_train, beta_train, L_train)
-        comfort_train = fatigue_train_val * unit_time_cost
-        st.info(f"疲劳成本 = {comfort_train:.2f}")
-
-    # 3️⃣ 效用函数构建
-    st.header("3️⃣ 效用函数构建")
-
-    st.markdown("### 效用函数形式：")
-    st.latex(r"""
-    U_i = - ( \beta_1 C_i + \beta_2 T_i + \beta_3 A_i + \beta_4 F_i )
-    """)
-
-    st.markdown("""
-    其中：
-    - \(C\)：经济性（票价）
-    - \(T\)：快速性（时间成本）
-    - \(A\)：便捷性（接驳成本）
-    - \(F\)：舒适性（疲劳成本）
-    """)
-
-    col_w1, col_w2, col_w3, col_w4 = st.columns(4)
-    with col_w1:
-        w_price = float(st.text_input("经济性权重 β1", "0", key=f"w1_{uid}"))
-    with col_w2:
-        w_time = float(st.text_input("快速性权重 β2", "0", key=f"w2_{uid}"))
-    with col_w3:
-        w_access = float(st.text_input("便捷性权重 β3", "0", key=f"w3_{uid}"))
-    with col_w4:
-        w_comfort = float(st.text_input("舒适性权重 β4", "0", key=f"w4_{uid}"))
-
-    U_air = -(w_price * price_air + w_time * time_air + w_access * access_air + w_comfort * comfort_air)
-    U_train = -(w_price * price_train + w_time * time_train + w_access * access_train + w_comfort * comfort_train)
-
-    st.success(f"✈️ 民航效用: {U_air:.2f}")
-    st.success(f"🚄 高铁效用: {U_train:.2f}")
-
-    st.divider()
-
-    # 4️⃣ 分担率计算
-    st.header("4️⃣ 分担率计算（Logit模型）")
-
-    st.markdown("### 概率公式：")
-    st.latex(r"""
-    P_i = \frac{e^{U_i}}{e^{U_{air}} + e^{U_{train}}}
-    """)
-
-    # 防止数值溢出，当U都为0时，平分概率
-    if U_air == 0 and U_train == 0:
-        P_air = 0.5
-        P_train = 0.5
+    price_delta = air_price - rail_price
+    time_delta = air_time - rail_time
+    mean_price_delta = data["air_price"] - data["rail_price"]
+    mean_time_delta = data["air_time"] - data["rail_time"]
+    if rp_enabled:
+        asc = math.log(data["real_p_air"] / (1 - data["real_p_air"])) - beta_p * (mean_price_delta / 100) - beta_t * mean_time_delta
     else:
-        try:
-            exp_air = math.exp(U_air)
-            exp_train = math.exp(U_train)
-            P_air = exp_air / (exp_air + exp_train)
-            P_train = exp_train / (exp_air + exp_train)
-        except OverflowError:
-            # 极端情况处理（如果权重没调好导致数值过大）
-            P_air = 1.0 if U_air > U_train else 0.0
-            P_train = 1.0 - P_air
+        asc = const_input
+    u_air = asc + beta_p * (price_delta / 100) + beta_t * time_delta
+    p_air, p_train = logit_share(u_air)
+
+    col_delta1, col_delta2 = st.columns(2)
+    col_delta1.metric("票价差（民航-高铁）", f"{price_delta:.1f} 元")
+    col_delta2.metric("时间差（民航-高铁）", f"{time_delta:.1f} 小时")
+
+    st.markdown("---")
+    st.header("3. 模型公式说明")
+    st.latex(
+        r"""
+        \begin{align*}
+        \Delta P &= P_{air} - P_{rail} \\
+        \Delta T &= T_{air} - T_{rail} \\
+        U_{air} &= ASC + \beta_p \cdot \frac{\Delta P}{100} + \beta_t \cdot \Delta T,\quad U_{rail}=0 \\
+        P_{air} &= \frac{e^{U_{air}}}{e^{U_{air}} + e^{U_{rail}}},\quad P_{rail}=1-P_{air}
+        \end{align*}
+        """
+    )
+
+    st.markdown("---")
+    st.header("4. 计算结果")
+
+    col_u1, col_u2 = st.columns(2)
+    col_u1.info(f"民航相对效用 U_air = **{u_air:.4f}**")
+    col_u2.info("高铁基准效用 U_rail = **0.0000**")
 
     col_res1, col_res2 = st.columns(2)
-    with col_res1:
-        st.success(f"✈️ 民航分担率: **{P_air:.2%}**")
-    with col_res2:
-        st.success(f"🚄 高铁分担率: **{P_train:.2%}**")
+    col_res1.success(f"### 民航分担率 {p_air:.2%}")
+    col_res2.success(f"### 高铁分担率 {p_train:.2%}")
 
 
-# =====================================
-# 主页面：设置标签页
-# =====================================
-tab1, tab2, tab3 = st.tabs(["🌟 长沙 - 上海", "🌟 上海 - 贵阳", "🌟 杭州 - 贵阳"])
+tab1, tab2 = st.tabs(["长沙 - 上海", "上海 - 贵阳"])
 
 with tab1:
-    render_calculator("长沙", "上海", "cs_sh")
+    render_calculator("cs_sh")
 
 with tab2:
-    render_calculator("上海", "贵阳", "sh_gy")
-
-with tab3:
-    render_calculator("杭州", "贵阳", "hz_gy")
+    render_calculator("sh_gy")
